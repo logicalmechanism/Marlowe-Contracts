@@ -9,8 +9,10 @@ import           Data.String
     N Users have k slots to  deposit 1 token into the lottery role. The lottery role will select a user,
     after k slots but before k*k slots, to receive all tokens that were deposited. If the lottery does
     not select a user before k*k slots then all user are returned their 1 token deposit.
+
+    This script can be easily changed to account for any donation/fund raiser/group purchase.
     
-    The number N sets the maximum allow users to use the smart contract at one time.
+    The number n sets the maximum allow users to use the smart contract at one time.
     The number k sets the timeframe for the lottery to play out.
 
     Company: Logical Mechanism
@@ -18,9 +20,11 @@ import           Data.String
     Year: 2021
 -}
 
+numUser :: Integer
+numUser = 10
 
 main :: IO ()
-main = print . pretty $ genContracts (10, 10)
+main = print . pretty $ genContracts (numUser, numUser)
 
 -- A TokenName deposits 1 token to the lottery role.
 buyin :: TokenName -> Action
