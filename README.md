@@ -1,0 +1,1 @@
+# Copy and paste into the Marlowe Playground to test out the smart contracts.
