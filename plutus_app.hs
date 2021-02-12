@@ -11,6 +11,7 @@ import           Playground.Contract
 import qualified Prelude
 import           Wallet.Emulator.Wallet    (Wallet, walletPubKey)
 
+
 {-
     Plutus Contract
 
@@ -21,8 +22,25 @@ import           Wallet.Emulator.Wallet    (Wallet, walletPubKey)
     Year: 2021
 -}
 
+-------------------------------------------------------------------------------
 
--- The Validator function has the format of (Datum -> Redeemer -> ValidatorCtx -> Bool).
+-- Custom DataTypes lifted into Plutus from Haskell. This allows the validator
+-- function to have custom datatypes has its input and output. Each newtype 
+-- is used to wrap the value.
+--
+-- Reference 
+--
+newtype ToString = ToString ByteString deriving newtype PlutusTx.IsData
+PlutusTx.makeLift ''ToString
+toString :: String -> ToString
+toString = ToString . C.pack
+
+-------------------------------------------------------------------------------
+
+-- The Validator function has the format:
+--
+-- (Datum -> Redeemer -> ValidatorCtx -> Bool).
+--
 -- This is computed on the chain.
 -- The Datum and Redeemer types are defined in the exampleInstance data type ExampleDataType.
 -- 
@@ -30,9 +48,10 @@ import           Wallet.Emulator.Wallet    (Wallet, walletPubKey)
 --
 -- @see: LogicalDataType
 --
-verify :: Integer -> Integer -> ValidatorCtx -> Bool
-verify _ _ _ = True
+verify :: ToString -> ToString -> ValidatorCtx -> Bool
+verify (ToString actual) (ToString guess) _ = actual == guess
 
+-------------------------------------------------------------------------------
 
 -- The DataType describes the type of values used in the Datum and Redeemer.
 -- These two parameters are wrappers around the data we use for the input and output.
@@ -43,9 +62,10 @@ verify _ _ _ = True
 -- 
 data LogicalDataType
 instance Scripts.ScriptType LogicalDataType where
-    type instance DatumType LogicalDataType = Integer -- Change to any allowed Haskell Type
-    type instance RedeemerType LogicalDataType = Integer -- Change to any allowed Haskell Type
+    type instance DatumType LogicalDataType = ToString -- Change to any allowed Haskell Type
+    type instance RedeemerType LogicalDataType = ToString -- Change to any allowed Haskell Type
 
+-------------------------------------------------------------------------------
 
 -- The script instance contains the information about the validator script.
 -- This allows the input to be submitted to the chain. Every validator has
@@ -65,8 +85,10 @@ instance Scripts.ScriptType LogicalDataType where
 logicalInstance :: Scripts.ScriptInstance LogicalDataType
 logicalInstance = Scripts.validator @LogicalDataType
     $$(PlutusTx.compile [|| verify ||]) -- input validator function name here
-    $$(PlutusTx.compile [|| Scripts.wrapValidator @Integer @Integer ||]) -- Change @Integer to which ever type is used in the DataType
+    $$(PlutusTx.compile [|| wrap ||]) where
+        wrap = Scripts.wrapValidator @ToString @ToString
 
+-------------------------------------------------------------------------------
 
 -- The contract endpoints.
 -- The contract is a transaction to the blockchain.
@@ -82,18 +104,20 @@ logicalInstance = Scripts.validator @LogicalDataType
 --
 lock :: AsContractError e => Contract LogicalSchema e ()
 lock = do
-    LockParams amount <- endpoint @"lock" @LockParams
-    let tx            = Constraints.mustPayToTheScript 123 amount
+    LockParams amount password <- endpoint @"lock" @LockParams
+    let tx = Constraints.mustPayToTheScript (toString password) amount
     void $ submitTxConstraints logicalInstance tx
 
 
 unlock :: AsContractError e => Contract LogicalSchema e ()
 unlock = do
-    UnlockParams amount <- endpoint @"unlock" @UnlockParams
+    UnlockParams password <- endpoint @"unlock" @UnlockParams
     unspentOutputs <- utxoAt (Ledger.scriptAddress $ Scripts.validatorScript logicalInstance)
-    let tx = collectFromScript unspentOutputs 123
-    void $ submitTxConstraintsSpending logicalInstance unspentOutputs tx -- Much be a different wallet that submited the lock.
+    let redeemer = toString password
+        tx       = collectFromScript unspentOutputs redeemer
+    void $ submitTxConstraintsSpending logicalInstance unspentOutputs tx -- Much be a different wallet than the wallet that submited the lock.
 
+-------------------------------------------------------------------------------
 
 -- Each endpoint needs a parameter function of this form. The deriving
 -- keywords allow Haskell to auto create functions for the endpoint.
@@ -113,13 +137,16 @@ unlock = do
 -- But it can also be a newtype.
 --
 data LockParams = LockParams
-    { amount :: Value}
+    {
+        amount   :: Value
+    ,   passwordLock :: String
+    }
     deriving stock (Prelude.Eq, Prelude.Show, Generic) -- Always include
     deriving anyclass (FromJSON, ToJSON, IotsType, ToSchema, ToArgument) -- Always include
 
 
 data UnlockParams = UnlockParams
-    { amountUnlock :: Value}
+    { passwordUnlock :: String}
     deriving stock (Prelude.Eq, Prelude.Show, Generic) -- Always include
     deriving anyclass (FromJSON, ToJSON, IotsType, ToSchema, ToArgument) -- Always include
 
