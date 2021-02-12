@@ -1,1 +1,2 @@
-# Copy and paste into the Marlowe Playground to test out the smart contracts.
+# Copy and paste the raw text into a Playground to test out the smart contracts.
+Each contract will have the playground type near the top description.

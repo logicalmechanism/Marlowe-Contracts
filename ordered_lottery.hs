@@ -5,8 +5,11 @@ import           Language.Marlowe
 import           Ledger.Value
 import           Data.ByteString.Internal
 import           Data.String
-{- 
-    N Users have k slots to  deposit 1 token into the lottery role. The lottery role will select a user,
+
+{-
+    Marlowe Contract
+
+    N Users have k slots to deposit 1 token into the lottery role. The lottery role will select a user,
     after k slots but before k*k slots, to receive all tokens that were deposited. If the lottery does
     not select a user before k*k slots then all user are returned their 1 token deposit.
 
@@ -20,23 +23,29 @@ import           Data.String
     Year: 2021
 -}
 
-numUser :: Integer
-numUser = 10
 
 main :: IO ()
 main = print . pretty $ genContracts (numUser, numUser)
+
+
+numUser :: Integer
+numUser = 10
+
 
 -- A TokenName deposits 1 token to the lottery role.
 buyin :: TokenName -> Action
 buyin user = Deposit (Role "lottery") (Role user) (Token "" "") (Constant 1)
 
+
 -- A user is paid all available tokens inside the lottery.
 cashout :: TokenName -> Contract
 cashout user = Pay (Role "lottery") (Party (Role user)) (Token "" "") (AvailableMoney (Role "lottery") (Token "" "")) Close
 
+
 -- The lottery selects between user 1 and the nth user. One and n are in the bounds.
 lotteryChoice :: Integer -> Action
 lotteryChoice n = Choice (ChoiceId "choice" (Role "lottery")) [Bound 1 n]
+
 
 -- The lottery can only select between 1 and n users for any value of n. If selected then cashout.
 checkVote :: Integer -> Contract
@@ -49,6 +58,7 @@ checkVote n =
         (checkVote (n - 1))
     where
         player = fromString ("" ++ show n)
+
 
 -- If the lottery does not select a user in k*k slots then return all deposits to users.
 returnDeposit :: Integer -> Contract
@@ -63,6 +73,7 @@ returnDeposit n =
     where
         user = fromString ("" ++ show n)
 
+
 -- Give n users chose a number between 1 and n then checVote for that selected user.
 choose :: Integer -> Contract
 choose 0 = Close
@@ -74,6 +85,7 @@ choose n =
         ] time (returnDeposit n)
     where
         time = 1000
+
 
 -- Recursively generate the contract for N users.
 genContracts :: (Integer, Integer) -> Contract

@@ -6,6 +6,8 @@ import           Ledger.Value
 import           Data.ByteString.Internal
 
 {-
+    Marlowe Contract
+
     This contract models a peer-to-peer transaction with arbitary tokens with an lovelace deposit.
     Each user deposits 1 Lovelace each for the transaction fee and as a pre-agreement to the sale.
     The seller deposits the amount to be sold in their account. This can be any type of token
@@ -18,20 +20,26 @@ import           Data.ByteString.Internal
     Author: Quinn Parkinson
     Year: 2021 
 -}
+
+
 main :: IO ()
 main = print . pretty $ contract ("A", 100, "AA", "Token1", "B", 25, "BB", "Token2")
+
 
 -- Reserves an amount of a token to a user.
 reserveAmt :: (TokenName, Integer, CurrencySymbol, TokenName) -> Action
 reserveAmt (user, amount, symbol, name) = Deposit (Role user) (Role user) (Token symbol name) (Constant amount)
 
+
 -- UserA pays an amount of a token to userB
 payment :: (TokenName, TokenName, Integer, CurrencySymbol, TokenName, Contract) -> Contract
 payment (userA, userB, amount, symbol, name, cont) = Pay (Role userA) (Party (Role userB)) (Token symbol name) (Constant amount) cont
 
+
 -- A binary choice, no is zero and yes is one.
 yesno :: (ByteString, TokenName) -> Action
 yesno (id, user) = Choice (ChoiceId id (Role user)) [Bound 0 1]
+
 
 -- The p2p agreement to swap two different amounts of tokens to one another. 
 agreement :: (TokenName, Integer, CurrencySymbol, TokenName,TokenName, Integer, CurrencySymbol, TokenName) -> Contract
@@ -45,6 +53,7 @@ agreement (userA, amtA, symA, nameA, userB, amtB, symB, nameB) =
             )
         ) Close
     ) Close
+
 
 -- The generic p2p contract for artbitary token swap with lovelace reservation.
 contract :: (TokenName, Integer, CurrencySymbol, TokenName,TokenName, Integer, CurrencySymbol, TokenName) -> Contract
