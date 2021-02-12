@@ -14,6 +14,8 @@ import           Wallet.Emulator.Wallet    (Wallet, walletPubKey)
 {-
     Plutus Contract
 
+    Each exposed endpoint uses the same instance and validator.
+
     Company: Logical Mechanism
     Author: Quinn Parkinson
     Year: 2021
@@ -25,6 +27,9 @@ import           Wallet.Emulator.Wallet    (Wallet, walletPubKey)
 -- The Datum and Redeemer types are defined in the exampleInstance data type ExampleDataType.
 -- 
 --  This function just passes True.
+--
+-- @see: LogicalDataType
+--
 verify :: Integer -> Integer -> ValidatorCtx -> Bool
 verify _ _ _ = True
 
@@ -63,7 +68,7 @@ logicalInstance = Scripts.validator @LogicalDataType
     $$(PlutusTx.compile [|| Scripts.wrapValidator @Integer @Integer ||]) -- Change @Integer to which ever type is used in the DataType
 
 
--- The "lock" contract endpoint. using the LogicalSchema.
+-- The contract endpoints.
 -- The contract is a transaction to the blockchain.
 --
 -- exampleParams var1 var2 var3 <- endpoint @"example" @exampleParams
@@ -82,16 +87,39 @@ lock = do
     void $ submitTxConstraints logicalInstance tx
 
 
+unlock :: AsContractError e => Contract LogicalSchema e ()
+unlock = do
+    UnlockParams amount <- endpoint @"unlock" @UnlockParams
+    unspentOutputs <- utxoAt (Ledger.scriptAddress $ Scripts.validatorScript logicalInstance)
+    let tx = collectFromScript unspentOutputs 123
+    void $ submitTxConstraintsSpending logicalInstance unspentOutputs tx -- Much be a different wallet that submited the lock.
+
+
 -- Each endpoint needs a parameter function of this form. The deriving
 -- keywords allow Haskell to auto create functions for the endpoint.
 --
 -- { param1 :: String
 -- , param2 :: Value
 -- , param3 :: Bool
+-- , param4 :: Integer
 -- }
+--
+-- A Value is assumed to be a Lovelace and an Integer is a number.
+--
+-- The data keyword is lifted - that is, they contain their own ⊥ value that
+-- is distinct from all the others. The mathematical symbol for bottom is '⊥'
+-- and it refers to a computation which never completes successfully.
+--
+-- But it can also be a newtype.
 --
 data LockParams = LockParams
     { amount :: Value}
+    deriving stock (Prelude.Eq, Prelude.Show, Generic) -- Always include
+    deriving anyclass (FromJSON, ToJSON, IotsType, ToSchema, ToArgument) -- Always include
+
+
+data UnlockParams = UnlockParams
+    { amountUnlock :: Value}
     deriving stock (Prelude.Eq, Prelude.Show, Generic) -- Always include
     deriving anyclass (FromJSON, ToJSON, IotsType, ToSchema, ToArgument) -- Always include
 
@@ -101,12 +129,13 @@ data LockParams = LockParams
 --
 -- .\/ Endpoint "exampleOption" exampleOptionParams
 --
--- @see: lock
--- @see: LockParams
+-- @see: lock, unlock
+-- @see: LockParams, UnlockParams
 --
 type LogicalSchema =
     BlockchainActions
         .\/ Endpoint "lock" LockParams
+        .\/ Endpoint "unlock" UnlockParams
 
 
 -- Use select to create two user inputs. This allows the app to proceed with
@@ -115,9 +144,10 @@ type LogicalSchema =
 -- endpoints exampleOption `select` secondOption
 --
 -- @see: lock
+-- @see: unlock
 --
 endpoints :: AsContractError e => Contract LogicalSchema e ()
-endpoints = lock
+endpoints = lock `select` unlock
 
 
 -- Bind everything to a schema definition for the application.
