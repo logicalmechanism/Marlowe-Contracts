@@ -1,16 +1,39 @@
 {-# LANGUAGE TypeApplications #-}
+import           Control.Applicative       (Applicative (pure))
 import           Control.Monad             (void)
 import qualified Data.ByteString.Char8     as C
 import           Language.Plutus.Contract
 import qualified Language.PlutusTx         as PlutusTx
 import           Language.PlutusTx.Prelude hiding (pure, (<$>))
-import           Ledger                    (Address, Validator, ValidatorCtx, Value, scriptAddress, pubKeyHash)
+import           Ledger                    (Address, Validator, ValidatorCtx, Value, scriptAddress,PubKeyHash, pubKeyHash)
 import qualified Ledger.Constraints        as Constraints
 import qualified Ledger.Typed.Scripts      as Scripts
 import           Playground.Contract
 import qualified Prelude
 import           Wallet.Emulator.Wallet    (Wallet, walletPubKey)
 
+import           Control.Applicative                  (Applicative (pure))
+import           Control.Monad                        (void)
+import           Language.Plutus.Contract
+import qualified Language.Plutus.Contract.Constraints as Constraints
+import qualified Language.Plutus.Contract.Typed.Tx    as Typed
+import qualified Language.PlutusTx                    as PlutusTx
+import           Language.PlutusTx.Prelude            hiding (Applicative (..), Semigroup (..))
+import           Ledger                               (PubKeyHash, TxInfo (..), Validator, ValidatorCtx (..),
+                                                       pubKeyHash, txId, valueSpent)
+import qualified Ledger                               as Ledger
+import qualified Ledger.Ada                           as Ada
+import qualified Ledger.Contexts                      as V
+import qualified Ledger.Interval                      as Interval
+import qualified Ledger.Scripts                       as Scripts
+import           Ledger.Slot                          (Slot, SlotRange)
+import qualified Ledger.Typed.Scripts                 as Scripts
+import           Ledger.Value                         (Value)
+import qualified Ledger.Value                         as Value
+import           Playground.Contract
+import           Prelude                              (Semigroup (..))
+import qualified Prelude                              as Haskell
+import qualified Wallet.Emulator                      as Emulator
 
 {-
     Plutus Contract
@@ -48,8 +71,8 @@ toString = ToString . C.pack
 --
 -- @see: LogicalDataType
 --
-verify :: ToString -> ToString -> ValidatorCtx -> Bool
-verify (ToString actual) (ToString guess) _ = actual == guess
+verify :: PubKeyHash -> PubKeyHash -> ValidatorCtx -> Bool
+verify actual guess _ = actual == guess
 
 -------------------------------------------------------------------------------
 
@@ -62,8 +85,8 @@ verify (ToString actual) (ToString guess) _ = actual == guess
 -- 
 data LogicalDataType
 instance Scripts.ScriptType LogicalDataType where
-    type instance DatumType LogicalDataType = ToString -- Change to any allowed Haskell Type
-    type instance RedeemerType LogicalDataType = ToString -- Change to any allowed Haskell Type
+    type instance DatumType LogicalDataType = PubKeyHash -- Change to any allowed Haskell Type
+    type instance RedeemerType LogicalDataType = PubKeyHash -- Change to any allowed Haskell Type
 
 -------------------------------------------------------------------------------
 
@@ -86,7 +109,7 @@ logicalInstance :: Scripts.ScriptInstance LogicalDataType
 logicalInstance = Scripts.validator @LogicalDataType
     $$(PlutusTx.compile [|| verify ||]) -- input validator function name here
     $$(PlutusTx.compile [|| wrap ||]) where
-        wrap = Scripts.wrapValidator @ToString @ToString
+        wrap = Scripts.wrapValidator @PubKeyHash @PubKeyHash
 
 -------------------------------------------------------------------------------
 
@@ -104,8 +127,9 @@ logicalInstance = Scripts.validator @LogicalDataType
 --
 lock :: AsContractError e => Contract LogicalSchema e ()
 lock = do
-    LockParams amount password <- endpoint @"lock" @LockParams
-    let tx = Constraints.mustPayToTheScript (toString password) amount
+    LockParams amount <- endpoint @"lock" @LockParams
+    contributor <- pubKeyHash <$> ownPubKey
+    let tx = Constraints.mustPayToTheScript contributor amount
     void $ submitTxConstraints logicalInstance tx
 
 
@@ -113,9 +137,10 @@ unlock :: AsContractError e => Contract LogicalSchema e ()
 unlock = do
     UnlockParams password <- endpoint @"unlock" @UnlockParams
     unspentOutputs <- utxoAt (Ledger.scriptAddress $ Scripts.validatorScript logicalInstance)
-    let redeemer = toString password
-        tx       = collectFromScript unspentOutputs redeemer
+    contributor <- pubKeyHash <$> ownPubKey
+    let tx = collectFromScript unspentOutputs contributor
     void $ submitTxConstraintsSpending logicalInstance unspentOutputs tx -- Much be a different wallet than the wallet that submited the lock.
+
 
 -------------------------------------------------------------------------------
 
@@ -139,7 +164,6 @@ unlock = do
 data LockParams = LockParams
     {
         amount   :: Value
-    ,   passwordLock :: String
     }
     deriving stock (Prelude.Eq, Prelude.Show, Generic) -- Always include
     deriving anyclass (FromJSON, ToJSON, IotsType, ToSchema, ToArgument) -- Always include
