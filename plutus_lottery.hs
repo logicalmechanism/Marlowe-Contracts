@@ -23,10 +23,21 @@ import           Ledger.Slot                          (Slot, SlotRange)
 import qualified Ledger.Typed.Scripts                 as Scripts
 import           Ledger.Value                         (Value)
 import qualified Ledger.Value                         as Value
+import           Ledger.Address
 import           Playground.Contract
 import           Prelude                              (Semigroup (..))
 import qualified Prelude                              as Haskell
 import qualified Wallet.Emulator                      as Emulator
+import Numeric
+import qualified Data.ByteString.Char8     as C
+import Ledger.AddressMap
+
+
+-- Temp rando number generator
+--
+randomNumber :: Integer
+randomNumber = (toInteger $ fromEnum $ C.last $ C.pack $ show $ Ledger.pubKeyHash ((Emulator.walletPubKey (Emulator.Wallet 34)))) `mod` 10
+
 
 -- | A crowdfunding campaign.
 data Campaign = Campaign
@@ -36,8 +47,7 @@ data Campaign = Campaign
     -- ^ Target amount of funds
     , campaignCollectionDeadline :: Slot
     -- ^ The date by which the campaign owner has to collect the funds
-    , campaignOwner              :: PubKeyHash
-    , campaignWinner             :: PubKeyHash
+    , campaignOwner              :: [PubKeyHash]
     -- ^ Public key of the campaign owner. This key is entitled to retrieve the
     --   funds if the campaign is successful.
     } deriving (Generic, ToJSON, FromJSON, ToSchema)
@@ -48,7 +58,7 @@ PlutusTx.makeLift ''Campaign
 --   `CampaignAction` is provided as the redeemer. The validator script then
 --   checks if the conditions for performing this action are met.
 --
-data CampaignAction = Collect | Refund
+data CampaignAction = Collect | Refund | Pass
 
 PlutusTx.makeIsData ''CampaignAction
 PlutusTx.makeLift ''CampaignAction
@@ -64,17 +74,6 @@ newtype Contribution = Contribution
         } deriving stock (Haskell.Eq, Show, Generic)
           deriving anyclass (ToJSON, FromJSON, IotsType, ToSchema, ToArgument)
 
--- | Construct a 'Campaign' value from the campaign parameters,
---   using the wallet's public key.
-mkCampaign :: Slot -> Value -> Slot -> Wallet -> Campaign
-mkCampaign ddl target collectionDdl ownerWallet =
-    Campaign
-        { campaignDeadline = ddl
-        , campaignTarget   = target
-        , campaignCollectionDeadline = collectionDdl
-        , campaignOwner = pubKeyHash $ Emulator.walletPubKey ownerWallet
-        , campaignWinner = pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet 3)
-        }
 
 -- | The 'SlotRange' during which the funds can be collected
 collectionRange :: Campaign -> SlotRange
@@ -114,7 +113,7 @@ validCollection campaign txinfo =
     -- target (and hence the target was reached)
     && (valueSpent txinfo `Value.geq` campaignTarget campaign)
     -- Check that the transaction is signed by the campaign owner
-    && (txinfo `V.txSignedBy` campaignWinner campaign)
+    -- && (txinfo `V.txSignedBy` campaignOwner campaign)
 
 -- | The validator script is of type 'CrowdfundingValidator', and is
 -- additionally parameterized by a 'Campaign' definition. This argument is
@@ -127,6 +126,8 @@ mkValidator c con act p = case act of
     Refund  -> validRefund c con (valCtxTxInfo p)
     -- the "collection" branch
     Collect -> validCollection c (valCtxTxInfo p)
+    --
+    Pass    -> True
 
 -- | The validator script that determines whether the campaign owner can
 --   retrieve the funds or the contributors can claim a refund.
@@ -148,9 +149,11 @@ theCampaign = Campaign
     { campaignDeadline = 50
     , campaignTarget   = Ada.lovelaceValueOf 0
     , campaignCollectionDeadline = 60
-    , campaignOwner = pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet 1)
-    , campaignWinner = pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet 3)
+    , campaignOwner = [(player x) | x <- [1..10] ]
     }
+
+player :: Integer -> PubKeyHash
+player id = (pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet id))
 
 
 -- | The "contribute" branch of the contract for a specific 'Campaign'. Exposes
@@ -168,16 +171,8 @@ contribute cmp = do
 
     utxo <- watchAddressUntil (Scripts.scriptAddress inst) (campaignCollectionDeadline cmp)
 
-    -- 'utxo' is the set of unspent outputs at the campaign address at the
-    -- collection deadline. If 'utxo' still contains our own contribution
-    -- then we can claim a refund.
-
-    let flt Ledger.TxOutRef{txOutRefId} _ = txid Haskell.== txOutRefId
-        tx' = Typed.collectFromScriptFilter flt utxo Refund
-                <> Constraints.mustValidateIn (refundRange cmp)
-                <> Constraints.mustBeSignedBy contributor
-    if Constraints.modifiesUtxoSet tx'
-    then void (submitTxConstraintsSpending inst utxo tx')
+    if Constraints.modifiesUtxoSet tx
+    then void (submitTxConstraintsSpending inst utxo tx)
     else pure ()
 
 -- | The campaign owner's branch of the contract for a given 'Campaign'. It
@@ -185,19 +180,17 @@ contribute cmp = do
 --   the funding goal was reached in time.
 scheduleCollection :: AsContractError e => Campaign -> Contract CrowdfundingSchema e ()
 scheduleCollection cmp = do
-    let inst = scriptInstance cmp
-
-    -- Expose an endpoint that lets the user fire the starting gun on the
-    -- campaign. (This endpoint isn't technically necessary, we could just
-    -- run the 'trg' action right away)
-    () <- endpoint @"schedule collection"
-
-    _ <- awaitSlot (campaignDeadline cmp)
+    let inst = scriptInstance cmp -- pass campaign into instance
+    ()             <- endpoint @"schedule collection"
+    _              <- awaitSlot (campaignDeadline cmp) -- wait til slot then proceed
     unspentOutputs <- utxoAt (Scripts.scriptAddress inst)
-
-    let tx = Typed.collectFromScript unspentOutputs Collect
-            <> Constraints.mustValidateIn (collectionRange cmp)
+    winner         <- pubKeyHash <$> ownPubKey
+    logInfo @Ledger.AddressMap.UtxoMap unspentOutputs
+    let tx = Typed.collectFromScript unspentOutputs Pass
+            <> Constraints.mustPayToPubKey winner (Ada.toValue 1)
+            <> Constraints.mustPayToPubKey ((campaignOwner cmp) !! randomNumber) (Ada.toValue 10)
     void $ submitTxConstraintsSpending inst unspentOutputs tx
+
 
 
 endpoints :: AsContractError e => Contract CrowdfundingSchema e ()
