@@ -7,6 +7,7 @@
 
 import           Control.Applicative                  (Applicative (pure))
 import           Control.Monad                        (void)
+import qualified Data.Map                          as Map
 import           Language.Plutus.Contract
 import qualified Language.Plutus.Contract.Constraints as Constraints
 import qualified Language.Plutus.Contract.Typed.Tx    as Typed
@@ -24,6 +25,8 @@ import qualified Ledger.Typed.Scripts                 as Scripts
 import           Ledger.Value                         (Value)
 import qualified Ledger.Value                         as Value
 import           Ledger.Address
+import qualified Ledger.Contexts                   as Validation
+import qualified Ledger.Tx                         as Tx
 import           Playground.Contract
 import           Prelude                              (Semigroup (..))
 import qualified Prelude                              as Haskell
@@ -35,9 +38,12 @@ import Ledger.AddressMap
 
 -- Temp rando number generator
 --
-randomNumber :: Integer
-randomNumber = (toInteger $ fromEnum $ C.last $ C.pack $ show $ Ledger.pubKeyHash ((Emulator.walletPubKey (Emulator.Wallet 34)))) `mod` 10
+randomNumber :: Integer -> Integer
+randomNumber players = (toInteger $ fromEnum $ C.last $ C.pack $ show $ Ledger.pubKeyHash ((Emulator.walletPubKey (Emulator.Wallet 34)))) `mod` players
 
+numberOfPlayers :: [PubKeyHash] -> Integer
+numberOfPlayers [] = 0
+numberOfPlayers users =  1 + (numberOfPlayers (tail users))
 
 -- | A crowdfunding campaign.
 data Campaign = Campaign
@@ -47,7 +53,7 @@ data Campaign = Campaign
     -- ^ Target amount of funds
     , campaignCollectionDeadline :: Slot
     -- ^ The date by which the campaign owner has to collect the funds
-    , campaignOwner              :: [PubKeyHash]
+    , campaignPlayers              :: [PubKeyHash]
     -- ^ Public key of the campaign owner. This key is entitled to retrieve the
     --   funds if the campaign is successful.
     } deriving (Generic, ToJSON, FromJSON, ToSchema)
@@ -113,7 +119,7 @@ validCollection campaign txinfo =
     -- target (and hence the target was reached)
     && (valueSpent txinfo `Value.geq` campaignTarget campaign)
     -- Check that the transaction is signed by the campaign owner
-    -- && (txinfo `V.txSignedBy` campaignOwner campaign)
+    -- && (txinfo `V.txSignedBy` campaignPlayers campaign)
 
 -- | The validator script is of type 'CrowdfundingValidator', and is
 -- additionally parameterized by a 'Campaign' definition. This argument is
@@ -149,8 +155,9 @@ theCampaign = Campaign
     { campaignDeadline = 50
     , campaignTarget   = Ada.lovelaceValueOf 0
     , campaignCollectionDeadline = 60
-    , campaignOwner = [(player x) | x <- [1..10] ]
+    , campaignPlayers = [(player x) | x <- [1..3] ]
     }
+
 
 player :: Integer -> PubKeyHash
 player id = (pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet id))
@@ -164,13 +171,12 @@ contribute :: AsContractError e => Campaign -> Contract CrowdfundingSchema e ()
 contribute cmp = do
     () <- endpoint @"contribute"
     contributor <- pubKeyHash <$> ownPubKey
-    let inst = scriptInstance cmp
-        tx = Constraints.mustPayToTheScript contributor (Ada.lovelaceValueOf 1)
+    -- add in the a new pubkey hash into the campaign here
+    let inst   = scriptInstance cmp
+        tx     = Constraints.mustPayToTheScript contributor (Ada.lovelaceValueOf 1)
                 <> Constraints.mustValidateIn (Ledger.interval 1 (campaignDeadline cmp))
     txid <- fmap txId (submitTxConstraints inst tx)
-
     utxo <- watchAddressUntil (Scripts.scriptAddress inst) (campaignCollectionDeadline cmp)
-
     if Constraints.modifiesUtxoSet tx
     then void (submitTxConstraintsSpending inst utxo tx)
     else pure ()
@@ -185,10 +191,11 @@ scheduleCollection cmp = do
     _              <- awaitSlot (campaignDeadline cmp) -- wait til slot then proceed
     unspentOutputs <- utxoAt (Scripts.scriptAddress inst)
     winner         <- pubKeyHash <$> ownPubKey
-    logInfo @Ledger.AddressMap.UtxoMap unspentOutputs
-    let tx = Typed.collectFromScript unspentOutputs Pass
-            <> Constraints.mustPayToPubKey winner (Ada.toValue 1)
-            <> Constraints.mustPayToPubKey ((campaignOwner cmp) !! randomNumber) (Ada.toValue 10)
+    let value = foldMap (Validation.txOutValue . Tx.txOutTxOut . snd) (Map.toList unspentOutputs)
+        tx    = Typed.collectFromScript unspentOutputs Pass
+                <> Constraints.mustPayToPubKey winner (Ada.toValue 1)
+                <> Constraints.mustPayToPubKey ((campaignPlayers cmp) !! (randomNumber (numberOfPlayers (campaignPlayers cmp)))) value
+    -- logInfo @Value value
     void $ submitTxConstraintsSpending inst unspentOutputs tx
 
 
