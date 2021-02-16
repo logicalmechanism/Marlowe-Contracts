@@ -1,10 +1,3 @@
--- Crowdfunding contract implemented using the [[Plutus]] interface.
--- This is the fully parallel version that collects all contributions
--- in a single transaction.
---
--- Note [Transactions in the crowdfunding campaign] explains the structure of
--- this contract on the blockchain.
-
 import           Control.Applicative                  (Applicative (pure))
 import           Control.Monad                        (void)
 import qualified Data.Map                          as Map
@@ -39,8 +32,9 @@ import Ledger.AddressMap
 -- Temp rando number generator
 --
 randomNumber :: Integer -> Integer
-randomNumber players = (toInteger $ fromEnum $ C.last $ C.pack $ show $ Ledger.pubKeyHash ((Emulator.walletPubKey (Emulator.Wallet 34)))) `mod` players
+randomNumber players = (toInteger $ fromEnum $ C.last $ C.pack $ show $ Ledger.pubKeyHash ((Emulator.walletPubKey (Emulator.Wallet players)))) `mod` players
 
+-- number of players stored in the lottery.
 numberOfPlayers :: [PubKeyHash] -> Integer
 numberOfPlayers [] = 0
 numberOfPlayers users =  1 + (numberOfPlayers (tail users))
@@ -49,8 +43,6 @@ numberOfPlayers users =  1 + (numberOfPlayers (tail users))
 data Campaign = Campaign
     { campaignDeadline           :: Slot
     -- ^ The date by which the campaign target has to be met
-    , campaignTarget             :: Value
-    -- ^ Target amount of funds
     , campaignCollectionDeadline :: Slot
     -- ^ The date by which the campaign owner has to collect the funds
     , campaignPlayers              :: [PubKeyHash]
@@ -60,11 +52,8 @@ data Campaign = Campaign
 
 PlutusTx.makeLift ''Campaign
 
--- | Action that can be taken by the participants in this contract. A value of
---   `CampaignAction` is provided as the redeemer. The validator script then
---   checks if the conditions for performing this action are met.
---
-data CampaignAction = Collect | Refund | Pass
+-- | Action that can be taken by the participants in this contract. 
+data CampaignAction =  Pass
 
 PlutusTx.makeIsData ''CampaignAction
 PlutusTx.makeLift ''CampaignAction
@@ -73,23 +62,6 @@ type CrowdfundingSchema =
     BlockchainActions
         .\/ Endpoint "schedule collection" ()
         .\/ Endpoint "contribute" ()
-
-newtype Contribution = Contribution
-        { contribValue :: Value
-        -- ^ how much to contribute
-        } deriving stock (Haskell.Eq, Show, Generic)
-          deriving anyclass (ToJSON, FromJSON, IotsType, ToSchema, ToArgument)
-
-
--- | The 'SlotRange' during which the funds can be collected
-collectionRange :: Campaign -> SlotRange
-collectionRange cmp =
-    Interval.interval (campaignDeadline cmp) (campaignCollectionDeadline cmp)
-
--- | The 'SlotRange' during which a refund may be claimed
-refundRange :: Campaign -> SlotRange
-refundRange cmp =
-    Interval.from (campaignCollectionDeadline cmp)
 
 data Crowdfunding
 instance Scripts.ScriptType Crowdfunding where
@@ -103,61 +75,23 @@ scriptInstance cmp = Scripts.validator @Crowdfunding
     where
         wrap = Scripts.wrapValidator @PubKeyHash @CampaignAction
 
-{-# INLINABLE validRefund #-}
-validRefund :: Campaign -> PubKeyHash -> TxInfo -> Bool
-validRefund campaign contributor txinfo =
-    -- Check that the transaction falls in the refund range of the campaign
-    Interval.contains (refundRange campaign) (txInfoValidRange txinfo)
-    -- Check that the transaction is signed by the contributor
-    && (txinfo `V.txSignedBy` contributor)
 
-validCollection :: Campaign -> TxInfo -> Bool
-validCollection campaign txinfo =
-    -- Check that the transaction falls in the collection range of the campaign
-    (collectionRange campaign `Interval.contains` txInfoValidRange txinfo)
-    -- Check that the transaction is trying to spend more money than the campaign
-    -- target (and hence the target was reached)
-    && (valueSpent txinfo `Value.geq` campaignTarget campaign)
-    -- Check that the transaction is signed by the campaign owner
-    -- && (txinfo `V.txSignedBy` campaignPlayers campaign)
-
--- | The validator script is of type 'CrowdfundingValidator', and is
--- additionally parameterized by a 'Campaign' definition. This argument is
--- provided by the Plutus client, using 'PlutusTx.applyCode'.
--- As a result, the 'Campaign' definition is part of the script address,
--- and different campaigns have different addresses.
+-- | The validator script.
 mkValidator :: Campaign -> PubKeyHash -> CampaignAction -> ValidatorCtx -> Bool
 mkValidator c con act p = case act of
-    -- the "refund" branch
-    Refund  -> validRefund c con (valCtxTxInfo p)
-    -- the "collection" branch
-    Collect -> validCollection c (valCtxTxInfo p)
-    --
     Pass    -> True
-
--- | The validator script that determines whether the campaign owner can
---   retrieve the funds or the contributors can claim a refund.
---
-contributionScript :: Campaign -> Validator
-contributionScript = Scripts.validatorScript . scriptInstance
-
--- | The address of a [[Campaign]]
-campaignAddress :: Campaign -> Ledger.ValidatorHash
-campaignAddress = Scripts.validatorHash . contributionScript
 
 -- | The crowdfunding contract for the 'Campaign'.
 crowdfunding :: AsContractError e => Campaign -> Contract CrowdfundingSchema e ()
 crowdfunding c = contribute c `select` scheduleCollection c
 
--- | A sample campaign with a target of 20 Ada by slot 20
+-- | A sample campaign.
 theCampaign :: Campaign
 theCampaign = Campaign
     { campaignDeadline = 50
-    , campaignTarget   = Ada.lovelaceValueOf 0
     , campaignCollectionDeadline = 60
-    , campaignPlayers = [(player x) | x <- [1..3] ]
+    , campaignPlayers = [(player x) | x <- [1..5] ]
     }
-
 
 player :: Integer -> PubKeyHash
 player id = (pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet id))
@@ -193,9 +127,8 @@ scheduleCollection cmp = do
     winner         <- pubKeyHash <$> ownPubKey
     let value = foldMap (Validation.txOutValue . Tx.txOutTxOut . snd) (Map.toList unspentOutputs)
         tx    = Typed.collectFromScript unspentOutputs Pass
-                <> Constraints.mustPayToPubKey winner (Ada.toValue 1)
+                <> Constraints.mustPayToPubKey winner (Ada.toValue 1) -- Send back lottery creation ADA
                 <> Constraints.mustPayToPubKey ((campaignPlayers cmp) !! (randomNumber (numberOfPlayers (campaignPlayers cmp)))) value
-    -- logInfo @Value value
     void $ submitTxConstraintsSpending inst unspentOutputs tx
 
 
