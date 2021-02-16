@@ -1,5 +1,6 @@
 -- A wallet starts a schedule collection which allows N wallets to contribute k ADA.
 -- At the then of a predefined period a random wallet is paid all ADA in the lottry.
+--
 import           Control.Applicative                  (Applicative (pure))
 import           Control.Monad                        (void)
 import qualified Data.Map                          as Map
@@ -37,6 +38,7 @@ randomNumber :: Integer -> Integer
 randomNumber players = (toInteger $ fromEnum $ C.last $ C.pack $ show $ Ledger.pubKeyHash ((Emulator.walletPubKey (Emulator.Wallet players)))) `mod` players
 
 -- number of players stored in the lottery.
+--
 numberOfPlayers :: [PubKeyHash] -> Integer
 numberOfPlayers [] = 0
 numberOfPlayers users =  1 + (numberOfPlayers (tail users))
