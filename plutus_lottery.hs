@@ -1,3 +1,5 @@
+-- A wallet starts a schedule collection which allows N wallets to contribute k ADA.
+-- At the then of a predefined period a random wallet is paid all ADA in the lottry.
 import           Control.Applicative                  (Applicative (pure))
 import           Control.Monad                        (void)
 import qualified Data.Map                          as Map
@@ -46,7 +48,7 @@ data Campaign = Campaign
     , campaignCollectionDeadline :: Slot
     -- ^ The date by which the campaign owner has to collect the funds
     , campaignPlayers              :: [PubKeyHash]
-    -- ^ Public key of the campaign owner. This key is entitled to retrieve the
+    -- ^ This key is entitled to retrieve the
     --   funds if the campaign is successful.
     } deriving (Generic, ToJSON, FromJSON, ToSchema)
 
@@ -81,11 +83,11 @@ mkValidator :: Campaign -> PubKeyHash -> CampaignAction -> ValidatorCtx -> Bool
 mkValidator c con act p = case act of
     Pass    -> True
 
--- | The crowdfunding contract for the 'Campaign'.
+-- | Start the lottery or play the lottry.
 crowdfunding :: AsContractError e => Campaign -> Contract CrowdfundingSchema e ()
 crowdfunding c = contribute c `select` scheduleCollection c
 
--- | A sample campaign.
+-- | DEFAULT
 theCampaign :: Campaign
 theCampaign = Campaign
     { campaignDeadline = 50
@@ -93,14 +95,12 @@ theCampaign = Campaign
     , campaignPlayers = [(player x) | x <- [1..5] ]
     }
 
+-- Creates a pubkeyhask for a wallet.
 player :: Integer -> PubKeyHash
 player id = (pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet id))
 
 
--- | The "contribute" branch of the contract for a specific 'Campaign'. Exposes
---   an endpoint that allows the user to enter their public key and the
---   contribution. Then waits until the campaign is over, and collects the
---   refund if the funding target was not met.
+-- | Each contributer adds one ada into the lottery.
 contribute :: AsContractError e => Campaign -> Contract CrowdfundingSchema e ()
 contribute cmp = do
     () <- endpoint @"contribute"
@@ -115,9 +115,7 @@ contribute cmp = do
     then void (submitTxConstraintsSpending inst utxo tx)
     else pure ()
 
--- | The campaign owner's branch of the contract for a given 'Campaign'. It
---   watches the campaign address for contributions and collects them if
---   the funding goal was reached in time.
+-- | When the end slot is reached, pay a random wallet.
 scheduleCollection :: AsContractError e => Campaign -> Contract CrowdfundingSchema e ()
 scheduleCollection cmp = do
     let inst = scriptInstance cmp -- pass campaign into instance
