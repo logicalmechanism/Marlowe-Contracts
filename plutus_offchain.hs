@@ -36,8 +36,10 @@ import System.Random
 -- | DEFAULT Parameters for the Lottery. Ends in 50 Slots with 5 players.
 theLottery :: Lottery
 theLottery = Lottery
-    { lotteryDeadline = 50
-    , lotteryPlayers = [(player x) | x <- [1..5] ]
+    { lotteryDeadline           = 10
+    , lotteryCollectionDeadline = 50
+    , lotteryPlayers            = [(player x) | x <- [2..5] ]
+    , lotteryBuyin              = 100
     }
 
 -- Creates a pubkeyhask for a wallet.
@@ -50,14 +52,22 @@ getRn lo hi g = randomR (lo, hi) g
 
 -- number of players stored in the lottery.
 --
-numberOfPlayers :: [PubKeyHash] -> Integer
+numberOfPlayers :: [a] -> Integer
 numberOfPlayers [] = 0
 numberOfPlayers users =  1 + (numberOfPlayers (tail users))
+
+
+sumOfIncomes :: [Integer] -> Integer
+sumOfIncomes [] = 0
+sumOfIncomes incomes = (head incomes) + (sumOfIncomes (tail incomes))
+
 
 -- | A lottery system.
 data Lottery = Lottery
     { lotteryDeadline           :: Slot
-    , lotteryPlayers              :: [PubKeyHash]
+    , lotteryCollectionDeadline :: Slot
+    , lotteryPlayers            :: [PubKeyHash]
+    , lotteryBuyin              :: Integer
     } deriving (Generic, ToJSON, FromJSON, ToSchema)
 
 PlutusTx.makeLift ''Lottery
@@ -96,9 +106,9 @@ contribute :: AsContractError e => Lottery -> Contract LotterySchema e ()
 contribute cmp = do
     ()         <- endpoint @"contribute"
     let inst   = scriptInstance cmp
-        tx     = Constraints.mustPayToTheScript () (Ada.lovelaceValueOf 100)              -- Force 1 ADA buy in
+        tx     = Constraints.mustPayToTheScript () (Ada.lovelaceValueOf (lotteryBuyin cmp))            -- Force 1 ADA buy in
                 <> Constraints.mustValidateIn (Ledger.interval 1 (lotteryDeadline cmp)) -- Must buy in before lottery is over
-    txid       <- fmap txId (submitTxConstraints inst tx)
+    txid           <- fmap txId (submitTxConstraints inst tx)
     unspentOutputs <- utxoAt (Scripts.scriptAddress inst) 
     if Constraints.modifiesUtxoSet tx
     then void (submitTxConstraintsSpending inst unspentOutputs tx)
@@ -109,16 +119,41 @@ startLottery :: AsContractError e => Lottery -> Contract LotterySchema e ()
 startLottery cmp = do
     let inst = scriptInstance cmp
     ()             <- endpoint @"start lottery"
-    _              <- awaitSlot (lotteryDeadline cmp)     -- wait til slot then proceed
-    unspentOutputs <- utxoAt (Scripts.scriptAddress inst) -- Get ada in script
-    starter        <- pubKeyHash <$> ownPubKey            -- the key that started the lottery
-    let (randNum, nextGen) = getRn 1 (numberOfPlayers (lotteryPlayers cmp)) (mkStdGen 123)                     -- rando number between 0 and number of players
+    _              <- awaitSlot (lotteryCollectionDeadline cmp) -- wait til slot then proceed
+    unspentOutputs <- utxoAt (Scripts.scriptAddress inst)       -- Get ada in script
+    starter        <- pubKeyHash <$> ownPubKey                  -- the key that started the lottery
+    -- The outcome can be generated here.
+    let players            = numberOfPlayers (lotteryPlayers cmp)
+    let incomes            = [(lotteryBuyin cmp) | x <- [0..(players-1)]]
+    let outcomes           = ioGame incomes
         value              = foldMap (Validation.txOutValue . Tx.txOutTxOut . snd) (Map.toList unspentOutputs) -- Get value in script
         tx                 = Typed.collectFromScript unspentOutputs ()
-                            <> Constraints.mustPayToPubKey starter (Ada.toValue 1)                             -- Send back lottery creation ADA
-                            <> Constraints.mustPayToPubKey ((lotteryPlayers cmp) !! (randNum - 1)) value       -- Send ADA to random pub key
+                            <> (createTX (lotteryPlayers cmp) outcomes starter)
+    -- logInfo @[Value] outcomes
     void $ submitTxConstraintsSpending inst unspentOutputs tx
 
+
+createTX :: [PubKeyHash] -> [Integer] -> PubKeyHash -> Constraints.TxConstraints () ()
+createTX [] values starter = Constraints.mustPayToPubKey starter (Ada.toValue 1)
+createTX players values starter = (Constraints.mustPayToPubKey (head players) (Ada.lovelaceValueOf (head values)))
+                                    <> (createTX (tail players) (tail values) starter)
+
+ioGame :: [Integer] -> [Integer]
+ioGame incomes = do
+    let players = numberOfPlayers (incomes)
+    let total = sumOfIncomes (incomes)
+    let miners   = [0 | x <- [0..(players-1)]]
+    let gen = mkStdGen 123
+    let outcomes = mining total miners gen
+    outcomes
+
+mining :: Integer -> [Integer] -> StdGen -> [Integer]
+mining 0 miners gen = miners
+mining total miners gen = do
+    let (randNum, nextGen) = getRn 0 100 gen
+    if randNum > 86
+    then (mining (total - 1) ((tail miners) ++ [((head miners)+1)]) nextGen)
+    else (mining (total) ((tail miners) ++ [((head miners))]) nextGen)
 
 endpoints :: AsContractError e => Contract LotterySchema e ()
 endpoints = lotterysystem theLottery
