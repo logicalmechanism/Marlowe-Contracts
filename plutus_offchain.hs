@@ -114,6 +114,7 @@ contribute cmp = do
     then void (submitTxConstraintsSpending inst unspentOutputs tx)
     else pure ()
 
+
 -- | When the end slot is reached, pay a random wallet.
 startLottery :: AsContractError e => Lottery -> Contract LotterySchema e ()
 startLottery cmp = do
@@ -133,31 +134,39 @@ startLottery cmp = do
     void $ submitTxConstraintsSpending inst unspentOutputs tx
 
 
+-- The starter of the game must be paid their 1 ada back but this allows every player to be paid uniquely.
 createTX :: [PubKeyHash] -> [Integer] -> PubKeyHash -> Constraints.TxConstraints () ()
 createTX [] values starter = Constraints.mustPayToPubKey starter (Ada.toValue 1)
 createTX players values starter = (Constraints.mustPayToPubKey (head players) (Ada.lovelaceValueOf (head values)))
                                     <> (createTX (tail players) (tail values) starter)
 
+
 ioGame :: [Integer] -> [Integer]
 ioGame incomes = do
-    let players = numberOfPlayers (incomes)
-    let total = sumOfIncomes (incomes)
-    let miners   = [0 | x <- [0..(players-1)]]
-    let gen = mkStdGen 123
-    let outcomes = mining total miners gen
+    let players  = numberOfPlayers (incomes)
+        total    = sumOfIncomes (incomes)
+        miners   = [0 | x <- [0..(players-1)]]
+        gen      = mkStdGen 123
+        outcomes = mining total miners gen
     outcomes
 
+
 mining :: Integer -> [Integer] -> StdGen -> [Integer]
+mining total [] gen = []
 mining 0 miners gen = miners
 mining total miners gen = do
-    let (randNum, nextGen) = getRn 0 100 gen
-    if randNum > 86
-    then (mining (total - 1) ((tail miners) ++ [((head miners)+1)]) nextGen)
+    let (mineRoll, nextGen) = getRn 0 100 gen
+    let (rewardRoll, nextGen2) = getRn 1 10 nextGen
+    if mineRoll > 86
+    then (mining (total - rewardRoll) ((tail miners) ++ [((head miners)+rewardRoll)]) nextGen2)
     else (mining (total) ((tail miners) ++ [((head miners))]) nextGen)
+
 
 endpoints :: AsContractError e => Contract LotterySchema e ()
 endpoints = lotterysystem theLottery
 
+
 mkSchemaDefinitions ''LotterySchema
+
 
 $(mkKnownCurrencies [])
